@@ -60,7 +60,11 @@ The entire game lives in one `<script>` tag, organized in this order:
 
 ## Git Workflow
 
-This repo is pushed to GitHub at `https://github.com/justgavinhere/corgi-chase`. Commit and push after every meaningful change:
+This repo is at `https://github.com/justgavinhere/corgi-chase`.
+
+**Claude must commit and push to GitHub after every meaningful unit of work** — a completed feature, a bug fix, a refactor, a new level, etc. Never leave the session with uncommitted changes. This ensures work is never lost and any state can be reverted to.
+
+After completing any task:
 
 ```bash
 git add <file>
@@ -68,4 +72,8 @@ git commit -m "concise description of what changed and why"
 git push
 ```
 
-Keep commits focused — one logical change per commit so history is easy to revert through.
+Commit message rules:
+- Use the imperative mood: "Add sound effects", not "Added sound effects"
+- Describe *what* changed and *why*, not just *what*
+- Keep the subject line under 72 characters
+- One logical change per commit so history is easy to bisect and revert

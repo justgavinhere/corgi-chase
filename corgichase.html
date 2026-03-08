@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Corgi Chase</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    #game-container {
+      position: relative;
+      display: inline-block;
+    }
+    canvas {
+      display: block;
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(233,69,96,0.3);
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(26,26,46,0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.1rem;
+      border-radius: 8px;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 { font-size: 2.4rem; color: #e94560; letter-spacing: 3px; text-align: center; }
+    #overlay h2 { font-size: 1.4rem; color: #a8dadc; text-align: center; }
+    #overlay p  { font-size: 0.9rem; color: #888; text-align: center; max-width: 340px; line-height: 1.5; }
+    #overlay .score-big { font-size: 1.6rem; color: #f9c74f; }
+    .btn {
+      padding: 0.6rem 2rem;
+      font-size: 1rem;
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .btn:hover { background: #c73652; transform: scale(1.04); }
+    .btn.secondary { background: #0f3460; }
+    .btn.secondary:hover { background: #16213e; }
+  </style>
+</head>
+<body>
+<div id="game-container">
+  <canvas id="game" width="560" height="600"></canvas>
+  <div id="overlay">
+    <h1>CORGI CHASE</h1>
+    <h2>Eat all the cookies!</h2>
+    <p>Use arrow keys or WASD to move.<br>Avoid the humans — they want to leash you!</p>
+    <button class="btn" id="startBtn">Start Game</button>
+  </div>
+</div>
+<script>
+// ── Constants ──────────────────────────────────────────────────────────────
+const TILE = 40, COLS = 14, ROWS = 14;
+const W = COLS * TILE, H = ROWS * TILE;
+const BASE_PLAYER_MS = 180; // ms per tile
+const BASE_TILE_MS   = 240; // enemy base ms per tile
+const ANIM_MS = 120;
+const CATCH_DIST = TILE * 0.52;
+const AI_CHASE_MS = 10000, AI_SCATTER_MS = 4000;
+const T = { WALL:0, PATH:1, EMPTY:2, SPAWN:3 };
+
+// ── Level Data ─────────────────────────────────────────────────────────────
+const LEVELS = [
+  {
+    enemySpeed: 1.0, enemyCount: 2,
+    map: [
+      '##############',
+      '#......##.....#',
+      '#.##.#....#.##.',
+      '#.#...####...#.',
+      '#....#....#....',
+      '##.##.S..S.##.#',
+      '#....#....#....',
+      '#.##P.####.##.#',
+      '#....#....#....',
+      '##.##......##.#',
+      '#....######....',
+      '#.##.#....#.##.',
+      '#......##......',
+      '##############',
+    ]
+  },
+  {
+    enemySpeed: 1.25, enemyCount: 2,
+    map: [
+      '##############',
+      '#.....##......',
+      '#.####..####.#',
+      '#.#..S....S.##',
+      '#....######...',
+      '##...#....#..#',
+      '#....#.##.#...',
+      '#.##...P....##',
+      '#....#.##.#...',
+      '##...#....#..#',
+      '#....######...',
+      '#.####..####.#',
+      '#.....##......',
+      '##############',
+    ]
+  },
+  {
+    enemySpeed: 1.55, enemyCount: 3,
+    map: [
+      '##############',
+      '#.#.#..##..#.#',
+      '#.#.######.#.#',
+      '#..........S.#',
+      '#.####.##.####',
+      '#....#....#...',
+      '####.#.##.#.##',
+      '#..P...##...S#',
+      '####.#.##.#.##',
+      '#....#....#...',
+      '#.####.##.####',
+      '#.S.........,#',
+      '#.#.######.#.#',
+      '##############',
+    ]
+  }
+];
+
+// Fix maps to exactly 14 chars wide
+for (const lvl of LEVELS) {
+  lvl.map = lvl.map.map(row => {
+    if (row.length > COLS) return row.slice(0, COLS);
+    while (row.length < COLS) row += '#';
+    return row;
+  });
+}
+
+// ── Canvas Setup ───────────────────────────────────────────────────────────
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+
+// ── Game State ─────────────────────────────────────────────────────────────
+let gameState = 'MENU'; // MENU PLAYING CAUGHT LEVEL_COMPLETE GAME_OVER WIN_GAME
+let currentLevel = 0;
+let score = 0;
+let lastTime = 0;
+let animTimer = 0;
+let aiModeTimer = 0;
+let aiMode = 'chase';
+let mazeData, cookies, cookiesTotal, cookiesEaten;
+let wallCache;
+let enemies = [];
+let player;
+
+// ── Maze Parsing ───────────────────────────────────────────────────────────
+function parseMaze(mapStrings) {
+  const data = new Uint8Array(COLS * ROWS);
+  const cook = new Uint8Array(COLS * ROWS);
+  let playerStart = { col: 7, row: 7 };
+  const spawns = [];
+  for (let r = 0; r < ROWS; r++) {
+    const row = mapStrings[r] || '';
+    for (let c = 0; c < COLS; c++) {
+      const ch = row[c] || '#';
+      if (ch === '#') { data[r*COLS+c] = T.WALL; }
+      else if (ch === 'S') { data[r*COLS+c] = T.SPAWN; spawns.push({col:c,row:r}); }
+      else if (ch === 'P') { data[r*COLS+c] = T.EMPTY; playerStart = {col:c,row:r}; }
+      else if (ch === '.') { data[r*COLS+c] = T.PATH; cook[r*COLS+c] = 1; }
+      else { data[r*COLS+c] = T.EMPTY; }
+    }
+  }
+  return { data, cook, playerStart, spawns };
+}
+
+function isWalkable(data, c, r) {
+  if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return false;
+  return data[r*COLS+c] !== T.WALL;
+}
+
+// ── BFS Pathfinding ────────────────────────────────────────────────────────
+function bfsNextDir(data, fc, fr, tc, tr) {
+  if (fc === tc && fr === tr) return null;
+  const visited = new Uint8Array(COLS * ROWS);
+  const queue = [];
+  const DIRS4 = [{dc:0,dr:-1,n:'up'},{dc:0,dr:1,n:'down'},{dc:-1,dr:0,n:'left'},{dc:1,dr:0,n:'right'}];
+  visited[fr*COLS+fc] = 1;
+  for (const d of DIRS4) {
+    const nc = fc+d.dc, nr = fr+d.dr;
+    if (isWalkable(data,nc,nr) && !visited[nr*COLS+nc]) {
+      visited[nr*COLS+nc] = 1;
+      queue.push({col:nc,row:nr,first:d.n});
+    }
+  }
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur.col===tc && cur.row===tr) return cur.first;
+    for (const d of DIRS4) {
+      const nc = cur.col+d.dc, nr = cur.row+d.dr;
+      if (isWalkable(data,nc,nr) && !visited[nr*COLS+nc]) {
+        visited[nr*COLS+nc] = 1;
+        queue.push({col:nc,row:nr,first:cur.first});
+      }
+    }
+  }
+  return null;
+}
+
+const DIR_DELTA = {up:{dc:0,dr:-1},down:{dc:0,dr:1},left:{dc:-1,dr:0},right:{dc:1,dr:0}};
+
+function dirAngle(dir) {
+  return {right:0,down:Math.PI/2,left:Math.PI,up:-Math.PI/2}[dir] ?? 0;
+}
+
+function lerp(a, b, t) { return a + (b-a)*t; }
+
+// ── Off-screen Wall Cache ──────────────────────────────────────────────────
+function buildWallCache() {
+  wallCache = new OffscreenCanvas(W, H);
+  const wc = wallCache.getContext('2d');
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const x = c*TILE, y = r*TILE;
+      if (mazeData[r*COLS+c] === T.WALL) {
+        wc.fillStyle = '#0f3460';
+        wc.fillRect(x, y, TILE, TILE);
+        wc.fillStyle = '#1a4a8a';
+        wc.fillRect(x, y, TILE, 2);
+        wc.fillRect(x, y, 2, TILE);
+        wc.fillStyle = '#16213e';
+        wc.fillRect(x+TILE-2, y, 2, TILE);
+        wc.fillRect(x, y+TILE-2, TILE, 2);
+      } else {
+        wc.fillStyle = '#16213e';
+        wc.fillRect(x, y, TILE, TILE);
+      }
+    }
+  }
+}
+
+// ── Level Load ─────────────────────────────────────────────────────────────
+function loadLevel(n) {
+  const lvl = LEVELS[n];
+  const parsed = parseMaze(lvl.map);
+  mazeData = parsed.data;
+  cookies  = parsed.cook;
+  cookiesTotal = cookies.reduce((a,b)=>a+b,0);
+  cookiesEaten = 0;
+  buildWallCache();
+  powerCookiePositions = getPowerCookiePositions();
+
+  // Player
+  const ps = parsed.playerStart;
+  player = {
+    col: ps.col, row: ps.row,
+    px: ps.col*TILE+TILE/2, py: ps.row*TILE+TILE/2,
+    prevPx: ps.col*TILE+TILE/2, prevPy: ps.row*TILE+TILE/2,
+    dir: 'left', nextDir: 'left',
+    moveTimer: 0, speed: 1.0,
+    frame: 0, frameTimer: 0,
+    lives: player ? player.lives : 3,
+    invincible: 1500,
+  };
+
+  // Enemies
+  enemies = [];
+  const spawns = parsed.spawns;
+  const scatterCorners = [
+    {col:COLS-2, row:1},
+    {col:1,      row:ROWS-2},
+    {col:COLS-2, row:ROWS-2},
+  ];
+  for (let i = 0; i < Math.min(lvl.enemyCount, spawns.length || 1); i++) {
+    const sp = spawns[i] || {col:7,row:6};
+    enemies.push({
+      col: sp.col, row: sp.row,
+      px: sp.col*TILE+TILE/2, py: sp.row*TILE+TILE/2,
+      targetCol: sp.col, targetRow: sp.row,
+      dir: 'left', speed: lvl.enemySpeed,
+      frame: 0, humanIndex: i % 2,
+      moveTimer: 999, // force BFS on first update
+      scatter: false,
+      scatterTarget: scatterCorners[i] || scatterCorners[0],
+      startDelay: i * 1200,
+    });
+  }
+
+  aiModeTimer = 0;
+  aiMode = 'chase';
+}
+
+// ── Sprite: Corgi ──────────────────────────────────────────────────────────
+function drawCorgi(cx, x, y, frame, dir, mini) {
+  const s = mini ? 0.45 : 1;
+  cx.save();
+  cx.translate(x, y);
+  cx.rotate(dirAngle(dir));
+  cx.scale(s, s);
+
+  // Body
+  cx.fillStyle = '#C8A96E';
+  roundRect(cx, -14, -9, 28, 18, 6);
+  cx.fill();
+
+  // Tail (wag)
+  const wagAngle = (frame % 2 === 0 ? 0.35 : -0.35);
+  cx.save();
+  cx.translate(-14, 0);
+  cx.rotate(wagAngle + Math.PI*0.15);
+  cx.strokeStyle = '#C8A96E';
+  cx.lineWidth = 4;
+  cx.lineCap = 'round';
+  cx.beginPath();
+  cx.moveTo(0, 0);
+  cx.quadraticCurveTo(-8, -10, -4, -16);
+  cx.stroke();
+  cx.restore();
+
+  // Legs
+  cx.fillStyle = '#B8946A';
+  const legPairs = [[6,-12],[6,12],[-4,-12],[-4,12]];
+  for (let i = 0; i < 4; i++) {
+    const [lx, lz] = legPairs[i];
+    const lift = ((i < 2 && frame < 2) || (i >= 2 && frame >= 2)) ? -3 : 0;
+    cx.beginPath();
+    cx.ellipse(lz, lx + lift, 4, 5, 0, 0, Math.PI*2);
+    cx.fill();
+  }
+
+  // Head
+  cx.fillStyle = '#C8A96E';
+  cx.beginPath();
+  cx.arc(17, 0, 11, 0, Math.PI*2);
+  cx.fill();
+
+  // Ears
+  cx.fillStyle = '#8B6914';
+  // left ear (droopy)
+  cx.beginPath();
+  cx.moveTo(12, -7);
+  cx.lineTo(20, -13);
+  cx.lineTo(26, -5);
+  cx.closePath();
+  cx.fill();
+  // right ear
+  cx.beginPath();
+  cx.moveTo(12, 7);
+  cx.lineTo(20, 13);
+  cx.lineTo(26, 5);
+  cx.closePath();
+  cx.fill();
+
+  // Snout
+  cx.fillStyle = '#E8C99E';
+  cx.beginPath();
+  cx.ellipse(24, 0, 6, 5, 0, 0, Math.PI*2);
+  cx.fill();
+  cx.fillStyle = '#5a3a1a';
+  cx.beginPath(); cx.arc(23, -1.5, 1.2, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(25.5, -1.5, 1.2, 0, Math.PI*2); cx.fill();
+
+  // Eye
+  cx.fillStyle = '#fff';
+  cx.beginPath(); cx.arc(19, -5, 3.5, 0, Math.PI*2); cx.fill();
+  cx.fillStyle = '#222';
+  cx.beginPath(); cx.arc(20, -5, 2, 0, Math.PI*2); cx.fill();
+
+  // Tongue
+  if (frame === 1) {
+    cx.fillStyle = '#ff8fa3';
+    cx.beginPath();
+    cx.ellipse(27, 3, 3, 4, 0.3, 0, Math.PI*2);
+    cx.fill();
+  }
+
+  cx.restore();
+}
+
+// ── Sprite: Human ─────────────────────────────────────────────────────────
+function drawHuman(cx, x, y, frame, dir, idx) {
+  const color = idx === 0 ? '#e94560' : '#a8dadc';
+  cx.save();
+  cx.translate(x, y);
+  cx.rotate(dirAngle(dir));
+
+  // Legs
+  cx.fillStyle = '#444';
+  const legOff = frame % 2 === 0 ? 5 : -5;
+  cx.beginPath(); cx.ellipse(4, -legOff, 4, 7, 0, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.ellipse(4,  legOff, 4, 7, 0, 0, Math.PI*2); cx.fill();
+
+  // Body
+  cx.fillStyle = color;
+  roundRect(cx, -12, -8, 18, 20, 5);
+  cx.fill();
+
+  // Head
+  cx.fillStyle = '#FDBCB4';
+  cx.beginPath(); cx.arc(0, -16, 10, 0, Math.PI*2); cx.fill();
+
+  // Hair
+  cx.fillStyle = idx === 0 ? '#5a3a1a' : '#2a2a5a';
+  cx.beginPath(); cx.arc(0, -23, 7, Math.PI, 0); cx.fill();
+
+  // Eyes
+  cx.fillStyle = '#fff';
+  cx.beginPath(); cx.arc(-4, -17, 2.5, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(4,  -17, 2.5, 0, Math.PI*2); cx.fill();
+  cx.fillStyle = '#222';
+  cx.beginPath(); cx.arc(-3.5, -17, 1.5, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(4.5,  -17, 1.5, 0, Math.PI*2); cx.fill();
+
+  // Arm with leash handle
+  cx.strokeStyle = '#FDBCB4';
+  cx.lineWidth = 3;
+  cx.lineCap = 'round';
+  cx.beginPath(); cx.moveTo(6, 0); cx.lineTo(16, -4); cx.stroke();
+  // leash loop
+  cx.strokeStyle = '#c8a96e';
+  cx.lineWidth = 2;
+  cx.beginPath(); cx.arc(19, -5, 4, 0, Math.PI*1.5); cx.stroke();
+
+  cx.restore();
+}
+
+// ── Sprite: Cookie ────────────────────────────────────────────────────────
+function drawCookie(cx, x, y) {
+  cx.fillStyle = '#c8a96e';
+  cx.beginPath(); cx.arc(x, y, 7, 0, Math.PI*2); cx.fill();
+  cx.fillStyle = '#5a3a1a';
+  const chips = [{dx:-2,dy:-2},{dx:2,dy:1},{dx:-1,dy:3}];
+  for (const ch of chips) {
+    cx.beginPath(); cx.ellipse(x+ch.dx, y+ch.dy, 1.5, 1, 0.5, 0, Math.PI*2); cx.fill();
+  }
+}
+
+function drawPowerCookie(cx, x, y, ts) {
+  const r = 10 + Math.sin(ts*0.005)*2;
+  cx.fillStyle = '#f9c74f';
+  cx.beginPath(); cx.arc(x, y, r, 0, Math.PI*2); cx.fill();
+  cx.fillStyle = '#5a3a1a';
+  for (let i = 0; i < 5; i++) {
+    const a = (i/5)*Math.PI*2;
+    cx.beginPath(); cx.arc(x+Math.cos(a)*7, y+Math.sin(a)*7, 2, 0, Math.PI*2); cx.fill();
+  }
+}
+
+// ── Power cookie positions (corners of each level) ────────────────────────
+function getPowerCookiePositions() {
+  const pos = [];
+  const candidates = [{c:1,r:1},{c:COLS-2,r:1},{c:1,r:ROWS-2},{c:COLS-2,r:ROWS-2}];
+  for (const {c,r} of candidates) {
+    if (mazeData[r*COLS+c] !== T.WALL) pos.push({c,r});
+  }
+  return pos;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function roundRect(cx, x, y, w, h, r) {
+  cx.beginPath();
+  cx.moveTo(x+r, y);
+  cx.arcTo(x+w, y, x+w, y+h, r);
+  cx.arcTo(x+w, y+h, x, y+h, r);
+  cx.arcTo(x, y+h, x, y, r);
+  cx.arcTo(x, y, x+w, y, r);
+  cx.closePath();
+}
+
+// ── Player Update ──────────────────────────────────────────────────────────
+function updatePlayer(dt) {
+  if (player.invincible > 0) player.invincible -= dt;
+
+  const tileDur = BASE_PLAYER_MS / player.speed;
+  player.moveTimer += dt;
+  const t = Math.min(player.moveTimer / tileDur, 1.0);
+
+  // pixel interpolation toward target
+  const tx = player.col*TILE+TILE/2, ty = player.row*TILE+TILE/2;
+  // source is previous tile (we recalc when arriving)
+  player.px = lerp(player.prevPx ?? tx, tx, t);
+  player.py = lerp(player.prevPy ?? ty, ty, t);
+
+  if (player.moveTimer >= tileDur) {
+    player.px = tx; player.py = ty;
+    player.moveTimer = 0;
+    player.prevPx = tx; player.prevPy = ty;
+
+    // try next direction first, then current
+    for (const tryDir of [player.nextDir, player.dir]) {
+      const {dc, dr} = DIR_DELTA[tryDir];
+      const nc = player.col+dc, nr = player.row+dr;
+      if (isWalkable(mazeData, nc, nr)) {
+        player.dir = tryDir;
+        player.col = nc; player.row = nr;
+        player.prevPx = tx; player.prevPy = ty;
+        break;
+      }
+    }
+  }
+}
+
+// ── Enemy Update ───────────────────────────────────────────────────────────
+function updateEnemy(e, dt) {
+  if (e.startDelay > 0) { e.startDelay -= dt; return; }
+
+  const tileDur = BASE_TILE_MS / e.speed;
+  e.moveTimer += dt;
+  const t = Math.min(e.moveTimer / tileDur, 1.0);
+
+  e.px = lerp((e.prevCol ?? e.col)*TILE+TILE/2, e.targetCol*TILE+TILE/2, t);
+  e.py = lerp((e.prevRow ?? e.row)*TILE+TILE/2, e.targetRow*TILE+TILE/2, t);
+
+  if (e.moveTimer >= tileDur) {
+    e.col = e.targetCol;
+    e.row = e.targetRow;
+    e.px = e.col*TILE+TILE/2;
+    e.py = e.row*TILE+TILE/2;
+    e.moveTimer = 0;
+    e.prevCol = e.col;
+    e.prevRow = e.row;
+
+    // choose next tile
+    const target = (aiMode === 'scatter')
+      ? e.scatterTarget
+      : {col: player.col, row: player.row};
+
+    const dir = bfsNextDir(mazeData, e.col, e.row, target.col, target.row);
+    if (dir) {
+      e.dir = dir;
+      const {dc, dr} = DIR_DELTA[dir];
+      e.targetCol = e.col+dc;
+      e.targetRow = e.row+dr;
+    }
+  }
+}
+
+function updateAIMode(dt) {
+  aiModeTimer += dt;
+  const limit = aiMode === 'chase' ? AI_CHASE_MS : AI_SCATTER_MS;
+  if (aiModeTimer >= limit) {
+    aiModeTimer = 0;
+    aiMode = aiMode === 'chase' ? 'scatter' : 'chase';
+  }
+}
+
+// ── Cookie / Collision ─────────────────────────────────────────────────────
+function checkCookies() {
+  const idx = player.row*COLS+player.col;
+  if (cookies[idx] === 1) {
+    cookies[idx] = 0;
+    cookiesEaten++;
+    score += 10;
+    if (cookiesEaten >= cookiesTotal) {
+      setState(currentLevel >= LEVELS.length-1 ? 'WIN_GAME' : 'LEVEL_COMPLETE');
+    }
+  }
+}
+
+function checkEnemyCatch() {
+  if (player.invincible > 0) return;
+  for (const e of enemies) {
+    if (e.startDelay > 0) continue;
+    const dx = e.px - player.px, dy = e.py - player.py;
+    if (Math.sqrt(dx*dx+dy*dy) < CATCH_DIST) {
+      player.lives--;
+      setState(player.lives <= 0 ? 'GAME_OVER' : 'CAUGHT');
+      return;
+    }
+  }
+}
+
+// ── Animation Frames ───────────────────────────────────────────────────────
+function updateAnimFrames(dt) {
+  animTimer += dt;
+  if (animTimer >= ANIM_MS) {
+    animTimer -= ANIM_MS;
+    player.frame = (player.frame+1)%4;
+    for (const e of enemies) e.frame = (e.frame+1)%4;
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+let powerCookiePositions = [];
+
+function render(ts) {
+  ctx.clearRect(0, 0, W, H+40);
+
+  // Maze (cached walls + floor)
+  ctx.drawImage(wallCache, 0, 0);
+
+  // Cookies
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (cookies[r*COLS+c]) {
+        const cx2 = c*TILE+TILE/2, cy2 = r*TILE+TILE/2;
+        // check if power cookie position
+        const isPower = powerCookiePositions.some(p=>p.c===c&&p.r===r);
+        if (isPower) drawPowerCookie(ctx, cx2, cy2, ts);
+        else drawCookie(ctx, cx2, cy2);
+      }
+    }
+  }
+
+  // Enemies (behind player)
+  for (const e of enemies) {
+    if (e.startDelay > 0) continue;
+    drawHuman(ctx, e.px, e.py, e.frame, e.dir, e.humanIndex);
+  }
+
+  // Player (flash when invincible)
+  if (player.invincible <= 0 || Math.floor(player.invincible/100)%2===0) {
+    drawCorgi(ctx, player.px, player.py, player.frame, player.dir, false);
+  }
+
+  // HUD
+  drawHUD(ts);
+}
+
+function drawHUD(ts) {
+  const y = H;
+  ctx.fillStyle = '#16213e';
+  ctx.fillRect(0, y, W, 40);
+
+  // Lives as mini corgis
+  for (let i = 0; i < player.lives; i++) {
+    drawCorgi(ctx, 18 + i*28, y+20, 0, 'right', true);
+  }
+
+  // Score
+  ctx.fillStyle = '#eee';
+  ctx.font = 'bold 15px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(`Score: ${score}`, W/2, y+26);
+
+  // Level
+  ctx.fillStyle = '#a8dadc';
+  ctx.textAlign = 'right';
+  ctx.fillText(`Level ${currentLevel+1}`, W-10, y+26);
+
+  ctx.textAlign = 'left';
+}
+
+// ── State Machine ──────────────────────────────────────────────────────────
+function setState(s) {
+  gameState = s;
+  switch(s) {
+    case 'MENU':
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = `
+        <h1>CORGI CHASE</h1>
+        <h2>Eat all the cookies!</h2>
+        <p>Use arrow keys or WASD to move.<br>Avoid the humans — they want to leash you!</p>
+        <button class="btn" id="startBtn">Start Game</button>`;
+      document.getElementById('startBtn').onclick = () => {
+        currentLevel = 0; score = 0;
+        player = null;
+        loadLevel(0);
+        setState('PLAYING');
+      };
+      break;
+
+    case 'PLAYING':
+      overlay.classList.add('hidden');
+      break;
+
+    case 'CAUGHT':
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = `
+        <h1 style="color:#e94560">Oh no!</h1>
+        <h2>Caught by a human!</h2>
+        <p>Lives remaining: ${'🐾'.repeat(Math.max(player.lives,0))}</p>
+        <button class="btn" id="continueBtn">Try Again</button>`;
+      document.getElementById('continueBtn').onclick = () => {
+        loadLevel(currentLevel);
+        setState('PLAYING');
+      };
+      break;
+
+    case 'LEVEL_COMPLETE':
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = `
+        <h1 style="color:#a8dadc">Level Clear!</h1>
+        <h2>All cookies eaten!</h2>
+        <div class="score-big">Score: ${score}</div>
+        <button class="btn" id="nextBtn">Next Level</button>`;
+      document.getElementById('nextBtn').onclick = () => {
+        currentLevel++;
+        loadLevel(currentLevel);
+        setState('PLAYING');
+      };
+      break;
+
+    case 'GAME_OVER':
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = `
+        <h1 style="color:#e94560">Game Over</h1>
+        <h2>The humans won...</h2>
+        <div class="score-big">Score: ${score}</div>
+        <button class="btn" id="replayBtn">Play Again</button>`;
+      document.getElementById('replayBtn').onclick = () => setState('MENU');
+      break;
+
+    case 'WIN_GAME':
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = `
+        <h1 style="color:#f9c74f">You Win!</h1>
+        <h2>The corgi runs free!</h2>
+        <div class="score-big">Final Score: ${score}</div>
+        <p>All cookies eaten across all levels!</p>
+        <button class="btn" id="replayBtn">Play Again</button>`;
+      document.getElementById('replayBtn').onclick = () => setState('MENU');
+      break;
+  }
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  const map = {ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
+               w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right'};
+  if (map[e.key]) {
+    if (gameState === 'PLAYING') player.nextDir = map[e.key];
+    e.preventDefault();
+  }
+});
+
+// ── Game Loop ──────────────────────────────────────────────────────────────
+function gameLoop(ts) {
+  requestAnimationFrame(gameLoop);
+  if (gameState !== 'PLAYING') return;
+  const dt = Math.min(ts - (lastTime||ts), 50);
+  lastTime = ts;
+  updateAIMode(dt);
+  updatePlayer(dt);
+  for (const e of enemies) updateEnemy(e, dt);
+  checkCookies();
+  checkEnemyCatch();
+  updateAnimFrames(dt);
+  render(ts);
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+setState('MENU');
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

@@ -78,74 +78,66 @@ const AI_CHASE_MS = 10000, AI_SCATTER_MS = 4000;
 const T = { WALL:0, PATH:1, EMPTY:2, SPAWN:3 };
 
 // ── Level Data ─────────────────────────────────────────────────────────────
+// Open fields — no walls. '.' = cookie tile, 'P' = player start, 'S' = enemy spawn.
 const LEVELS = [
   {
     enemySpeed: 1.0, enemyCount: 2,
     map: [
-      '##############',
-      '#......##.....#',
-      '#.##.#....#.##.',
-      '#.#...####...#.',
-      '#....#....#....',
-      '##.##.S..S.##.#',
-      '#....#....#....',
-      '#.##P.####.##.#',
-      '#....#....#....',
-      '##.##......##.#',
-      '#....######....',
-      '#.##.#....#.##.',
-      '#......##......',
-      '##############',
+      'S............S',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '......P.......',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      'S............S',
     ]
   },
   {
-    enemySpeed: 1.25, enemyCount: 2,
+    enemySpeed: 1.3, enemyCount: 2,
     map: [
-      '##############',
-      '#.....##......',
-      '#.####..####.#',
-      '#.#..S....S.##',
-      '#....######...',
-      '##...#....#..#',
-      '#....#.##.#...',
-      '#.##...P....##',
-      '#....#.##.#...',
-      '##...#....#..#',
-      '#....######...',
-      '#.####..####.#',
-      '#.....##......',
-      '##############',
+      '.......S......',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      'S.....P.......',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '.......S......',
     ]
   },
   {
-    enemySpeed: 1.55, enemyCount: 3,
+    enemySpeed: 1.6, enemyCount: 3,
     map: [
-      '##############',
-      '#.#.#..##..#.#',
-      '#.#.######.#.#',
-      '#..........S.#',
-      '#.####.##.####',
-      '#....#....#...',
-      '####.#.##.#.##',
-      '#..P...##...S#',
-      '####.#.##.#.##',
-      '#....#....#...',
-      '#.####.##.####',
-      '#.S.........,#',
-      '#.#.######.#.#',
-      '##############',
+      'S............S',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '......P.......',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '..............',
+      '......S.......',
     ]
   }
 ];
-
-// Fix maps to exactly 14 chars wide
-for (const lvl of LEVELS) {
-  lvl.map = lvl.map.map(row => {
-    if (row.length > COLS) return row.slice(0, COLS);
-    while (row.length < COLS) row += '#';
-    return row;
-  });
-}
 
 // ── Canvas Setup ───────────────────────────────────────────────────────────
 const canvas = document.getElementById('game');
@@ -230,23 +222,17 @@ function lerp(a, b, t) { return a + (b-a)*t; }
 function buildWallCache() {
   wallCache = new OffscreenCanvas(W, H);
   const wc = wallCache.getContext('2d');
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const x = c*TILE, y = r*TILE;
-      if (mazeData[r*COLS+c] === T.WALL) {
-        wc.fillStyle = '#0f3460';
-        wc.fillRect(x, y, TILE, TILE);
-        wc.fillStyle = '#1a4a8a';
-        wc.fillRect(x, y, TILE, 2);
-        wc.fillRect(x, y, 2, TILE);
-        wc.fillStyle = '#16213e';
-        wc.fillRect(x+TILE-2, y, 2, TILE);
-        wc.fillRect(x, y+TILE-2, TILE, 2);
-      } else {
-        wc.fillStyle = '#16213e';
-        wc.fillRect(x, y, TILE, TILE);
-      }
-    }
+  // Fill entire field
+  wc.fillStyle = '#16213e';
+  wc.fillRect(0, 0, W, H);
+  // Subtle grid lines so tiles are visible
+  wc.strokeStyle = '#1e2d50';
+  wc.lineWidth = 1;
+  for (let r = 0; r <= ROWS; r++) {
+    wc.beginPath(); wc.moveTo(0, r*TILE); wc.lineTo(W, r*TILE); wc.stroke();
+  }
+  for (let c = 0; c <= COLS; c++) {
+    wc.beginPath(); wc.moveTo(c*TILE, 0); wc.lineTo(c*TILE, H); wc.stroke();
   }
 }
 
@@ -537,11 +523,13 @@ function updateEnemy(e, dt) {
       : {col: player.col, row: player.row};
 
     const dir = bfsNextDir(mazeData, e.col, e.row, target.col, target.row);
-    if (dir) {
-      e.dir = dir;
-      const {dc, dr} = DIR_DELTA[dir];
-      e.targetCol = e.col+dc;
-      e.targetRow = e.row+dr;
+    const chosen = dir || e.dir; // keep last direction if already at target
+    const {dc, dr} = DIR_DELTA[chosen];
+    const nc = e.col+dc, nr = e.row+dr;
+    if (isWalkable(mazeData, nc, nr)) {
+      e.dir = chosen;
+      e.targetCol = nc;
+      e.targetRow = nr;
     }
   }
 }

@@ -487,6 +487,77 @@ function drawPowerCookie(cx, x, y, ts) {
   drawBiscuit(cx, x, y, 1.55, ts);
 }
 
+// ── Audio ──────────────────────────────────────────────────────────────────
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playTone(freq, type, duration, vol, start, freqEnd) {
+  if (!audioCtx) return;
+  const osc  = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, start);
+  if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, start + duration);
+  gain.gain.setValueAtTime(vol, start);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  osc.start(start);
+  osc.stop(start + duration + 0.02);
+}
+
+function sfxMunch() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  playTone(540, 'square', 0.055, 0.12, t, 210);
+}
+
+function sfxPowerMunch() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  playTone(360, 'sawtooth', 0.13, 0.18, t, 130);
+  playTone(540, 'square',   0.08, 0.10, t, 210);
+}
+
+function sfxCaught() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  playTone(440, 'sine', 0.28, 0.28, t,        260);
+  playTone(260, 'sine', 0.28, 0.20, t + 0.25, 110);
+}
+
+function sfxGameOver() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  [349, 311, 277, 220].forEach((f, i) => {
+    playTone(f, 'sine', 0.22, 0.25, t + i * 0.18, f * 0.85);
+  });
+}
+
+function sfxLevelClear() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  [523, 659, 784, 1047].forEach((f, i) => {
+    playTone(f, 'sine', 0.14, 0.28, t + i * 0.11);
+  });
+}
+
+function sfxWin() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  const melody = [523, 659, 784, 1047, 784, 1047, 1175];
+  const durs   = [0.12,0.12,0.12, 0.22,0.12, 0.22, 0.40];
+  let time = t;
+  melody.forEach((f, i) => {
+    playTone(f, 'sine', durs[i], 0.30, time);
+    time += durs[i] + 0.03;
+  });
+}
+
 // ── Power cookie positions (corners of each level) ────────────────────────
 function getPowerCookiePositions() {
   const pos = [];
@@ -593,7 +664,8 @@ function checkCookies() {
   if (cookies[idx] === 1) {
     cookies[idx] = 0;
     cookiesEaten++;
-    score += 10;
+    const isPower = powerCookiePositions.some(p => p.c === player.col && p.r === player.row);
+    if (isPower) { score += 50; sfxPowerMunch(); } else { score += 10; sfxMunch(); }
     if (cookiesEaten >= cookiesTotal) {
       setState(currentLevel >= LEVELS.length-1 ? 'WIN_GAME' : 'LEVEL_COMPLETE');
     }
@@ -607,7 +679,8 @@ function checkEnemyCatch() {
     const dx = e.px - player.px, dy = e.py - player.py;
     if (Math.sqrt(dx*dx+dy*dy) < CATCH_DIST) {
       player.lives--;
-      setState(player.lives <= 0 ? 'GAME_OVER' : 'CAUGHT');
+      if (player.lives <= 0) { sfxGameOver(); setState('GAME_OVER'); }
+      else { sfxCaught(); setState('CAUGHT'); }
       return;
     }
   }
@@ -696,6 +769,7 @@ function setState(s) {
         <p>Use arrow keys or WASD to move.<br>Avoid the humans — they want to leash you!</p>
         <button class="btn" id="startBtn">Start Game</button>`;
       document.getElementById('startBtn').onclick = () => {
+        initAudio();
         currentLevel = 0; score = 0;
         player = null;
         loadLevel(0);
@@ -721,6 +795,7 @@ function setState(s) {
       break;
 
     case 'LEVEL_COMPLETE':
+      sfxLevelClear();
       overlay.classList.remove('hidden');
       overlay.innerHTML = `
         <h1 style="color:#a8dadc">Level Clear!</h1>
@@ -745,6 +820,7 @@ function setState(s) {
       break;
 
     case 'WIN_GAME':
+      sfxWin();
       overlay.classList.remove('hidden');
       overlay.innerHTML = `
         <h1 style="color:#f9c74f">You Win!</h1>

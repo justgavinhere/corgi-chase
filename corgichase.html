@@ -156,6 +156,7 @@ let mazeData, cookies, cookiesTotal, cookiesEaten;
 let wallCache;
 let enemies = [];
 let player;
+let levelPlayerStart, levelSpawns, levelConfig;
 
 // ── Maze Parsing ───────────────────────────────────────────────────────────
 function parseMaze(mapStrings) {
@@ -247,8 +248,18 @@ function loadLevel(n) {
   buildWallCache();
   powerCookiePositions = getPowerCookiePositions();
 
-  // Player
-  const ps = parsed.playerStart;
+  // Store spawn info so respawnActors() can reuse it without re-parsing
+  levelPlayerStart = parsed.playerStart;
+  levelSpawns      = parsed.spawns;
+  levelConfig      = lvl;
+
+  respawnActors(3); // fresh level always starts with 3 lives
+}
+
+// ── Respawn actors at original positions (keeps cookies intact) ────────────
+function respawnActors(livesOverride) {
+  const ps = levelPlayerStart;
+  const lives = livesOverride !== undefined ? livesOverride : player.lives;
   player = {
     col: ps.col, row: ps.row,
     px: ps.col*TILE+TILE/2, py: ps.row*TILE+TILE/2,
@@ -256,27 +267,25 @@ function loadLevel(n) {
     dir: 'left', nextDir: 'left',
     moveTimer: 0, speed: 1.0,
     frame: 0, frameTimer: 0,
-    lives: player ? player.lives : 3,
-    invincible: 1500,
+    lives,
+    invincible: 2000,
   };
 
-  // Enemies
   enemies = [];
-  const spawns = parsed.spawns;
   const scatterCorners = [
     {col:COLS-2, row:1},
     {col:1,      row:ROWS-2},
     {col:COLS-2, row:ROWS-2},
   ];
-  for (let i = 0; i < Math.min(lvl.enemyCount, spawns.length || 1); i++) {
-    const sp = spawns[i] || {col:7,row:6};
+  for (let i = 0; i < Math.min(levelConfig.enemyCount, levelSpawns.length || 1); i++) {
+    const sp = levelSpawns[i] || {col:7, row:6};
     enemies.push({
       col: sp.col, row: sp.row,
       px: sp.col*TILE+TILE/2, py: sp.row*TILE+TILE/2,
       targetCol: sp.col, targetRow: sp.row,
-      dir: 'left', speed: lvl.enemySpeed,
+      dir: 'left', speed: levelConfig.enemySpeed,
       frame: 0, humanIndex: i % 2,
-      moveTimer: 999, // force BFS on first update
+      moveTimer: 999,
       scatter: false,
       scatterTarget: scatterCorners[i] || scatterCorners[0],
       startDelay: i * 1200,
@@ -789,7 +798,7 @@ function setState(s) {
         <p>Lives remaining: ${'🐾'.repeat(Math.max(player.lives,0))}</p>
         <button class="btn" id="continueBtn">Try Again</button>`;
       document.getElementById('continueBtn').onclick = () => {
-        loadLevel(currentLevel);
+        respawnActors();
         setState('PLAYING');
       };
       break;

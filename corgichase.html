@@ -421,26 +421,70 @@ function drawHuman(cx, x, y, frame, dir, idx) {
   cx.restore();
 }
 
-// ── Sprite: Cookie ────────────────────────────────────────────────────────
-function drawCookie(cx, x, y) {
-  cx.fillStyle = '#c8a96e';
-  cx.beginPath(); cx.arc(x, y, 7, 0, Math.PI*2); cx.fill();
-  cx.fillStyle = '#5a3a1a';
-  const chips = [{dx:-2,dy:-2},{dx:2,dy:1},{dx:-1,dy:3}];
-  for (const ch of chips) {
-    cx.beginPath(); cx.ellipse(x+ch.dx, y+ch.dy, 1.5, 1, 0.5, 0, Math.PI*2); cx.fill();
+// ── Sprite: Dog Biscuit (bone-shaped) ────────────────────────────────────
+function drawBiscuit(cx, x, y, scale, glowTs) {
+  cx.save();
+  cx.translate(x, y);
+  cx.rotate(Math.PI / 8); // slight diagonal tilt like a dropped treat
+
+  // Glow effect for power biscuit
+  if (glowTs !== undefined) {
+    cx.shadowColor = '#f9c74f';
+    cx.shadowBlur = 14 + Math.sin(glowTs * 0.005) * 7;
   }
+
+  cx.scale(scale, scale);
+
+  const hw = 8;   // half-width of center bar
+  const hh = 2.8; // half-height of center bar
+  const kr = 4.2; // knob radius
+
+  // Base biscuit color (warm Milk-Bone tan)
+  cx.fillStyle = '#D4A06A';
+
+  // Center bar
+  cx.beginPath();
+  cx.rect(-hw, -hh, hw * 2, hh * 2);
+  cx.fill();
+
+  // Four corner knobs
+  for (const kx of [-hw, hw]) {
+    for (const ky of [-hh, hh]) {
+      cx.beginPath();
+      cx.arc(kx, ky, kr, 0, Math.PI * 2);
+      cx.fill();
+    }
+  }
+
+  // Lighter highlight stripe across the middle (baked texture)
+  cx.fillStyle = 'rgba(255,220,160,0.35)';
+  cx.beginPath();
+  cx.rect(-hw + 1, -1, (hw - 1) * 2, 2);
+  cx.fill();
+
+  // Subtle darker edge outline
+  cx.strokeStyle = '#A0722A';
+  cx.lineWidth = 0.8;
+  // Outline the bar
+  cx.strokeRect(-hw, -hh, hw * 2, hh * 2);
+  // Outline each knob
+  for (const kx of [-hw, hw]) {
+    for (const ky of [-hh, hh]) {
+      cx.beginPath();
+      cx.arc(kx, ky, kr, 0, Math.PI * 2);
+      cx.stroke();
+    }
+  }
+
+  cx.restore();
+}
+
+function drawCookie(cx, x, y) {
+  drawBiscuit(cx, x, y, 1, undefined);
 }
 
 function drawPowerCookie(cx, x, y, ts) {
-  const r = 10 + Math.sin(ts*0.005)*2;
-  cx.fillStyle = '#f9c74f';
-  cx.beginPath(); cx.arc(x, y, r, 0, Math.PI*2); cx.fill();
-  cx.fillStyle = '#5a3a1a';
-  for (let i = 0; i < 5; i++) {
-    const a = (i/5)*Math.PI*2;
-    cx.beginPath(); cx.arc(x+Math.cos(a)*7, y+Math.sin(a)*7, 2, 0, Math.PI*2); cx.fill();
-  }
+  drawBiscuit(cx, x, y, 1.55, ts);
 }
 
 // ── Power cookie positions (corners of each level) ────────────────────────

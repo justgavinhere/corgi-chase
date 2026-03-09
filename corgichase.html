@@ -76,6 +76,8 @@ const ANIM_MS = 120;
 const CATCH_DIST = TILE * 0.52;
 const AI_CHASE_MS = 10000, AI_SCATTER_MS = 4000;
 const T = { WALL:0, PATH:1, EMPTY:2, SPAWN:3 };
+const POWER_DURATIONS = [15000, 10000, 5000]; // ms per level
+const HUMAN_RESPAWN_MS = 15000;
 
 // ── Level Data ─────────────────────────────────────────────────────────────
 // Open fields — no walls. '.' = cookie tile, 'P' = player start, 'S' = enemy spawn.
@@ -269,6 +271,7 @@ function respawnActors(livesOverride) {
     frame: 0, frameTimer: 0,
     lives,
     invincible: 2000,
+    powered: 0,
   };
 
   enemies = [];
@@ -289,6 +292,8 @@ function respawnActors(livesOverride) {
       scatter: false,
       scatterTarget: scatterCorners[i] || scatterCorners[0],
       startDelay: i * 1200,
+      spawnCol: sp.col, spawnRow: sp.row, // original spawn for respawn
+      eaten: false, respawnTimer: 0,
     });
   }
 
@@ -383,9 +388,76 @@ function drawCorgi(cx, x, y, frame, dir, mini) {
   cx.restore();
 }
 
+// ── Sprite: Shark (powered corgi) ─────────────────────────────────────────
+function drawShark(cx, x, y, frame, dir) {
+  cx.save();
+  cx.translate(x, y);
+  cx.rotate(dirAngle(dir));
+
+  // Body — sleek torpedo
+  cx.fillStyle = '#5a8faa';
+  cx.beginPath();
+  cx.ellipse(0, 0, 19, 9, 0, 0, Math.PI*2);
+  cx.fill();
+
+  // White belly
+  cx.fillStyle = '#dff0f0';
+  cx.beginPath();
+  cx.ellipse(1, 4, 13, 5, 0.15, 0, Math.PI*2);
+  cx.fill();
+
+  // Tail fin
+  cx.fillStyle = '#3a6f88';
+  cx.beginPath();
+  cx.moveTo(-15, 0);
+  cx.lineTo(-24, -9);
+  cx.lineTo(-19, 0);
+  cx.lineTo(-24,  9);
+  cx.closePath();
+  cx.fill();
+
+  // Dorsal fin (bobs with frame)
+  const finBob = frame % 2 === 0 ? 0 : 1;
+  cx.fillStyle = '#3a6f88';
+  cx.beginPath();
+  cx.moveTo(-2, -9 + finBob);
+  cx.lineTo(5, -20 + finBob);
+  cx.lineTo(10, -9 + finBob);
+  cx.closePath();
+  cx.fill();
+
+  // Pectoral fin
+  cx.fillStyle = '#4a7f98';
+  cx.beginPath();
+  cx.moveTo(3, 5);
+  cx.lineTo(10, 15);
+  cx.lineTo(-1, 10);
+  cx.closePath();
+  cx.fill();
+
+  // Eye
+  cx.fillStyle = '#111';
+  cx.beginPath(); cx.arc(13, -2, 2.8, 0, Math.PI*2); cx.fill();
+  cx.fillStyle = '#fff';
+  cx.beginPath(); cx.arc(13.8, -2.8, 1, 0, Math.PI*2); cx.fill();
+
+  // Teeth — menacing grin
+  cx.fillStyle = '#fff';
+  for (let i = 0; i < 4; i++) {
+    const tx = 12 + i * 3.2;
+    cx.beginPath();
+    cx.moveTo(tx, 3);
+    cx.lineTo(tx + 1.4, 8);
+    cx.lineTo(tx + 2.8, 3);
+    cx.fill();
+  }
+
+  cx.restore();
+}
+
 // ── Sprite: Human ─────────────────────────────────────────────────────────
-function drawHuman(cx, x, y, frame, dir, idx) {
-  const color = idx === 0 ? '#e94560' : '#a8dadc';
+function drawHuman(cx, x, y, frame, dir, idx, frightened) {
+  const color = frightened ? '#5588cc' : (idx === 0 ? '#e94560' : '#a8dadc');
   cx.save();
   cx.translate(x, y);
   cx.rotate(dirAngle(dir));
@@ -405,27 +477,44 @@ function drawHuman(cx, x, y, frame, dir, idx) {
   cx.fillStyle = '#FDBCB4';
   cx.beginPath(); cx.arc(0, -16, 10, 0, Math.PI*2); cx.fill();
 
-  // Hair
-  cx.fillStyle = idx === 0 ? '#5a3a1a' : '#2a2a5a';
-  cx.beginPath(); cx.arc(0, -23, 7, Math.PI, 0); cx.fill();
+  // Hair — stands on end when frightened
+  cx.fillStyle = frightened ? '#5588cc' : (idx === 0 ? '#5a3a1a' : '#2a2a5a');
+  if (frightened) {
+    // Spiky scared hair
+    for (let s = -3; s <= 3; s++) {
+      cx.beginPath(); cx.moveTo(s*3, -26); cx.lineTo(s*3, -32); cx.lineWidth=2; cx.strokeStyle='#5588cc'; cx.stroke();
+    }
+  } else {
+    cx.beginPath(); cx.arc(0, -23, 7, Math.PI, 0); cx.fill();
+  }
 
-  // Eyes
+  // Eyes — wide and scared when frightened
   cx.fillStyle = '#fff';
-  cx.beginPath(); cx.arc(-4, -17, 2.5, 0, Math.PI*2); cx.fill();
-  cx.beginPath(); cx.arc(4,  -17, 2.5, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(-4, -17, frightened ? 3.5 : 2.5, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(4,  -17, frightened ? 3.5 : 2.5, 0, Math.PI*2); cx.fill();
   cx.fillStyle = '#222';
-  cx.beginPath(); cx.arc(-3.5, -17, 1.5, 0, Math.PI*2); cx.fill();
-  cx.beginPath(); cx.arc(4.5,  -17, 1.5, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(-3.5, -17, frightened ? 2 : 1.5, 0, Math.PI*2); cx.fill();
+  cx.beginPath(); cx.arc(4.5,  -17, frightened ? 2 : 1.5, 0, Math.PI*2); cx.fill();
+  // Scared sweat drop
+  if (frightened) {
+    cx.fillStyle = '#88aaff';
+    cx.beginPath(); cx.arc(9, -14, 2, 0, Math.PI*2); cx.fill();
+  }
 
-  // Arm with leash handle
+  // Arms — raised in panic when frightened, holding leash otherwise
   cx.strokeStyle = '#FDBCB4';
   cx.lineWidth = 3;
   cx.lineCap = 'round';
-  cx.beginPath(); cx.moveTo(6, 0); cx.lineTo(16, -4); cx.stroke();
-  // leash loop
-  cx.strokeStyle = '#c8a96e';
-  cx.lineWidth = 2;
-  cx.beginPath(); cx.arc(19, -5, 4, 0, Math.PI*1.5); cx.stroke();
+  if (frightened) {
+    // Both arms raised
+    cx.beginPath(); cx.moveTo(-6, 2); cx.lineTo(-14, -10); cx.stroke();
+    cx.beginPath(); cx.moveTo(6, 2);  cx.lineTo(14, -10);  cx.stroke();
+  } else {
+    cx.beginPath(); cx.moveTo(6, 0); cx.lineTo(16, -4); cx.stroke();
+    cx.strokeStyle = '#c8a96e';
+    cx.lineWidth = 2;
+    cx.beginPath(); cx.arc(19, -5, 4, 0, Math.PI*1.5); cx.stroke();
+  }
 
   cx.restore();
 }
@@ -555,6 +644,13 @@ function sfxLevelClear() {
   });
 }
 
+function sfxEatHuman() {
+  initAudio();
+  const t = audioCtx.currentTime;
+  playTone(200, 'sawtooth', 0.08, 0.25, t, 80);
+  playTone(150, 'sine',     0.15, 0.20, t + 0.06, 60);
+}
+
 function sfxWin() {
   initAudio();
   const t = audioCtx.currentTime;
@@ -591,6 +687,7 @@ function roundRect(cx, x, y, w, h, r) {
 // ── Player Update ──────────────────────────────────────────────────────────
 function updatePlayer(dt) {
   if (player.invincible > 0) player.invincible -= dt;
+  if (player.powered   > 0) player.powered   -= dt;
 
   const tileDur = BASE_PLAYER_MS / player.speed;
   player.moveTimer += dt;
@@ -622,10 +719,36 @@ function updatePlayer(dt) {
 }
 
 // ── Enemy Update ───────────────────────────────────────────────────────────
+function getFurthestCorner(fromCol, fromRow) {
+  const corners = [{col:1,row:1},{col:COLS-2,row:1},{col:1,row:ROWS-2},{col:COLS-2,row:ROWS-2}];
+  return corners.reduce((best, c) => {
+    const d = Math.abs(c.col-fromCol) + Math.abs(c.row-fromRow);
+    const db = Math.abs(best.col-fromCol) + Math.abs(best.row-fromRow);
+    return d > db ? c : best;
+  });
+}
+
 function updateEnemy(e, dt) {
   if (e.startDelay > 0) { e.startDelay -= dt; return; }
 
-  const tileDur = BASE_TILE_MS / e.speed;
+  // Eaten — count down then respawn
+  if (e.eaten) {
+    e.respawnTimer -= dt;
+    if (e.respawnTimer <= 0) {
+      e.eaten = false;
+      e.col = e.spawnCol; e.row = e.spawnRow;
+      e.px  = e.col*TILE+TILE/2; e.py = e.row*TILE+TILE/2;
+      e.targetCol = e.col; e.targetRow = e.row;
+      e.prevCol = e.col;   e.prevRow = e.row;
+      e.moveTimer = 999;
+    }
+    return;
+  }
+
+  // Frightened — run away at half speed
+  const frightened = player.powered > 0;
+  const speedMult  = frightened ? 0.5 : 1.0;
+  const tileDur = BASE_TILE_MS / (e.speed * speedMult);
   e.moveTimer += dt;
   const t = Math.min(e.moveTimer / tileDur, 1.0);
 
@@ -641,13 +764,14 @@ function updateEnemy(e, dt) {
     e.prevCol = e.col;
     e.prevRow = e.row;
 
-    // choose next tile
-    const target = (aiMode === 'scatter')
-      ? e.scatterTarget
-      : {col: player.col, row: player.row};
+    // Frightened: flee to the corner farthest from the player
+    // Normal: chase or scatter per AI mode
+    const target = frightened
+      ? getFurthestCorner(player.col, player.row)
+      : (aiMode === 'scatter' ? e.scatterTarget : {col: player.col, row: player.row});
 
     const dir = bfsNextDir(mazeData, e.col, e.row, target.col, target.row);
-    const chosen = dir || e.dir; // keep last direction if already at target
+    const chosen = dir || e.dir;
     const {dc, dr} = DIR_DELTA[chosen];
     const nc = e.col+dc, nr = e.row+dr;
     if (isWalkable(mazeData, nc, nr)) {
@@ -674,7 +798,11 @@ function checkCookies() {
     cookies[idx] = 0;
     cookiesEaten++;
     const isPower = powerCookiePositions.some(p => p.c === player.col && p.r === player.row);
-    if (isPower) { score += 50; sfxPowerMunch(); } else { score += 10; sfxMunch(); }
+    if (isPower) {
+      score += 50;
+      sfxPowerMunch();
+      player.powered = POWER_DURATIONS[currentLevel];
+    } else { score += 10; sfxMunch(); }
     if (cookiesEaten >= cookiesTotal) {
       setState(currentLevel >= LEVELS.length-1 ? 'WIN_GAME' : 'LEVEL_COMPLETE');
     }
@@ -684,13 +812,21 @@ function checkCookies() {
 function checkEnemyCatch() {
   if (player.invincible > 0) return;
   for (const e of enemies) {
-    if (e.startDelay > 0) continue;
+    if (e.startDelay > 0 || e.eaten) continue;
     const dx = e.px - player.px, dy = e.py - player.py;
     if (Math.sqrt(dx*dx+dy*dy) < CATCH_DIST) {
-      player.lives--;
-      if (player.lives <= 0) { sfxGameOver(); setState('GAME_OVER'); }
-      else { sfxCaught(); setState('CAUGHT'); }
-      return;
+      if (player.powered > 0) {
+        // Shark chomps the human
+        e.eaten = true;
+        e.respawnTimer = HUMAN_RESPAWN_MS;
+        score += 200;
+        sfxEatHuman();
+      } else {
+        player.lives--;
+        if (player.lives <= 0) { sfxGameOver(); setState('GAME_OVER'); }
+        else { sfxCaught(); setState('CAUGHT'); }
+        return;
+      }
     }
   }
 }
@@ -728,14 +864,20 @@ function render(ts) {
   }
 
   // Enemies (behind player)
+  const frightened = player.powered > 0;
+  const nearEnd    = player.powered > 0 && player.powered < 3000;
   for (const e of enemies) {
-    if (e.startDelay > 0) continue;
-    drawHuman(ctx, e.px, e.py, e.frame, e.dir, e.humanIndex);
+    if (e.startDelay > 0 || e.eaten) continue;
+    // Flash human between frightened/normal in last 3 seconds
+    const showFrightened = frightened && !(nearEnd && Math.floor(player.powered/300)%2===0);
+    drawHuman(ctx, e.px, e.py, e.frame, e.dir, e.humanIndex, showFrightened);
   }
 
-  // Player (flash when invincible)
+  // Player — shark when powered (flashes back to corgi in last 3s), normal otherwise
+  const showShark = player.powered > 0 && !(nearEnd && Math.floor(player.powered/300)%2===0);
   if (player.invincible <= 0 || Math.floor(player.invincible/100)%2===0) {
-    drawCorgi(ctx, player.px, player.py, player.frame, player.dir, false);
+    if (showShark) drawShark(ctx, player.px, player.py, player.frame, player.dir);
+    else           drawCorgi(ctx, player.px, player.py, player.frame, player.dir, false);
   }
 
   // HUD
